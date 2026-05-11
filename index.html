@@ -637,6 +637,13 @@ function subscribeToAll(){
     snap.docs.forEach(d=>{history[d.id]=d.data();});
     setSyncing(false); render(); showSaved();
   });
+  FB.onSnapshot(FB.collection(FB.db,'families',uid,'courses'),snap=>{
+    snap.docs.forEach(d=>{
+      // Only update checked if it's the current week to avoid overwriting user actions
+      if(d.id===getWeekKey()) checked=d.data().checked||{};
+    });
+    render();
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -648,7 +655,9 @@ async function saveIngrFS(i){ setSyncing(true); await FB.setDoc(FB.doc(FB.db,'fa
 async function deleteIngrFS(id){ setSyncing(true); await FB.deleteDoc(FB.doc(FB.db,'families',uid,'ingredients',String(id))); }
 async function saveMenuWeek(){
   setSyncing(true);
-  await FB.setDoc(FB.doc(FB.db,'families',uid,'menus',getWeekKey()),getMenus());
+  const key=getWeekKey();
+  await FB.setDoc(FB.doc(FB.db,'families',uid,'menus',key),getMenus());
+  await FB.setDoc(FB.doc(FB.db,'families',uid,'courses',key),{checked});
 }
 
 // ── Sync UI ───────────────────────────────────────────────────
@@ -702,9 +711,15 @@ function getRepasItems(slot){
 function setRepasItems(jour,repas,items){
   getMenus()[jour][repas]=items.length>0?items:null;
 }
-function prevWeek(){currentWeekOffset--;expanded={};checked={};updateWeekUI();render();}
-function nextWeek(){currentWeekOffset++;expanded={};checked={};updateWeekUI();render();}
-function goToday(){currentWeekOffset=0;expanded={};checked={};updateWeekUI();render();}
+async function loadCheckedForWeek(){
+  try{
+    const snap=await FB.getDoc(FB.doc(FB.db,'families',uid,'courses',getWeekKey()));
+    checked=snap.exists()?(snap.data().checked||{}):{};
+  } catch(e){ checked={}; }
+}
+function prevWeek(){ currentWeekOffset--; expanded={}; checked={}; updateWeekUI(); loadCheckedForWeek().then(render); }
+function nextWeek(){ currentWeekOffset++; expanded={}; checked={}; updateWeekUI(); loadCheckedForWeek().then(render); }
+function goToday(){ currentWeekOffset=0; expanded={}; checked={}; updateWeekUI(); loadCheckedForWeek().then(render); }
 function updateWeekUI(){
   const l=document.getElementById('wk-label'),s=document.getElementById('wk-sub');
   if(l) l.textContent=weekLabel(); if(s) s.textContent=weekSub();
@@ -1059,7 +1074,7 @@ function renderCourses(){
     <div class="sc"><div class="sn">${done}</div><div class="sl">Cochés</div></div>
     <div class="sc"><div class="sn">${total-done}</div><div class="sl">Restants</div></div>
   </div>`;
-  if(done>0) html+=`<button onclick="checked={};render()" style="width:100%;padding:7px;background:none;border:0.5px solid var(--bdr);border-radius:var(--rs);font-size:12px;color:var(--mu);cursor:pointer;margin-bottom:10px;font-family:var(--fb)">Tout décocher</button>`;
+  if(done>0) html+=`<button onclick="uncheckAll()" style="width:100%;padding:7px;background:none;border:0.5px solid var(--bdr);border-radius:var(--rs);font-size:12px;color:var(--mu);cursor:pointer;margin-bottom:10px;font-family:var(--fb)">Tout décocher</button>`;
 
   // Ordre des catégories (CAT_CONFIG inclut déjà 'Autres', pas besoin de l'ajouter)
   const catOrder=Object.keys(CAT_CONFIG);
@@ -1308,7 +1323,20 @@ function exportPDF(){
 // UTILS
 // ══════════════════════════════════════════════════════════════
 function toggleDay(jour){expanded[jour]=!expanded[jour];render();}
-function toggleCheck(k){checked[k]=!checked[k];render();}
+async function toggleCheck(k){
+  checked[k]=!checked[k];
+  render();
+  setSyncing(true);
+  await FB.setDoc(FB.doc(FB.db,'families',uid,'courses',getWeekKey()),{checked});
+  setSyncing(false);
+}
+async function uncheckAll(){
+  checked={};
+  render();
+  setSyncing(true);
+  await FB.setDoc(FB.doc(FB.db,'families',uid,'courses',getWeekKey()),{checked});
+  setSyncing(false);
+}
 function switchTab(tab,el){currentTab=tab;document.querySelectorAll('.ntab').forEach(t=>t.classList.remove('on'));el.classList.add('on');render();}
 function renderInPlace(){document.getElementById('content').innerHTML=renderTab();}
 function renderTab(){
