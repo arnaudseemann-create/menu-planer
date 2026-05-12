@@ -716,7 +716,11 @@ function getEventsForDay(dateStr){
 function getDateForJour(jour){
   const idx=JOURS.indexOf(jour);
   const d=getWeekStart(); d.setDate(d.getDate()+idx);
-  return d.toISOString().slice(0,10);
+  // Use local date components to avoid UTC timezone shift
+  const yy=d.getFullYear();
+  const mm=String(d.getMonth()+1).padStart(2,'0');
+  const dd=String(d.getDate()).padStart(2,'0');
+  return `${yy}-${mm}-${dd}`;
 }
 
 function formatEventTime(isoStr,allDay){
@@ -1756,12 +1760,14 @@ function exportPDF(){
   const W=210,M=18;let y=22;
   const G=[45,90,14],Gl=[235,245,220],BG=[246,245,241],TXT=[24,23,20],MUT=[104,104,94];
   function sf(sz,st='normal',c=TXT){doc.setFontSize(sz);doc.setFont('helvetica',st);doc.setTextColor(...c);}
+  // Normalize accented chars for jsPDF helvetica compatibility
+  function n(str){ return (str||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\x00-\xFF]/g,'?'); }
   doc.setFillColor(...G);doc.rect(0,0,W,28,'F');
   doc.setFontSize(20);doc.setFont('helvetica','bold');doc.setTextColor(255,255,255);
-  doc.text('MenuPlaner — '+familyName,M,17);
+  doc.text(n('MenuPlaner — '+familyName),M,17);
   doc.setFontSize(9);doc.setFont('helvetica','normal');doc.setTextColor(210,230,195);
-  doc.text(weekLabel(),M,23);y=36;
-  sf(13,'bold',G);doc.text('Menus de la semaine',M,y);y+=8;
+  doc.text(n(weekLabel()),M,23);y=36;
+  sf(13,'bold',G);doc.text(n('Menus de la semaine'),M,y);y+=8;
   const menus=getMenus();
   const hasAnyCalendar=msAccounts.some(a=>a.events&&a.events.length>0);
   JOURS.forEach(jour=>{
@@ -1772,18 +1778,18 @@ function exportPDF(){
     if(!hasAny && !events.length) return;
     if(y>255){doc.addPage();y=20;}
     doc.setFillColor(...Gl);doc.roundedRect(M,y,W-M*2,7,1.5,1.5,'F');
-    sf(10,'bold',G);doc.text(jour,M+4,y+5);
-    // Date on right
-    const d=new Date(dateStr);sf(8,'normal',MUT);
-    doc.text(d.toLocaleDateString('fr-FR',{day:'numeric',month:'short'}),W-M,y+5,{align:'right'});
+    sf(10,'bold',G);doc.text(n(jour),M+4,y+5);
+    const [yy,mm,dd]=dateStr.split('-').map(Number);
+    const dLocal=new Date(yy,mm-1,dd);
+    sf(8,'normal',MUT);
+    doc.text(n(dLocal.toLocaleDateString('fr-FR',{day:'numeric',month:'short'})),W-M,y+5,{align:'right'});
     y+=10;
-    // Calendar events
     if(events.length){
       events.forEach(e=>{
         if(y>268){doc.addPage();y=20;}
         sf(8,'normal',[91,94,166]);
         const timeStr=formatEventTime(e.start,e.allDay);
-        doc.text(`📅 ${timeStr} ${e.title} (${e.owner})`,M+3,y+3);
+        doc.text(n(`[Agenda] ${timeStr}  ${e.title} (${e.owner})`),M+3,y+3);
         y+=5;
       });
       y+=2;
@@ -1792,14 +1798,14 @@ function exportPDF(){
     REPAS.forEach(r=>{
       const items=getRepasItems(m[r]); if(!items.length) return;
       if(y>268){doc.addPage();y=20;}
-      sf(8,'normal',MUT);doc.text(r,M+3,y+4);
+      sf(8,'normal',MUT);doc.text(n(r),M+3,y+4);
       const label=items.map(item=>{
         if(item.type==='plat'){const p=getPlatById(item.platId);return p?p.nom:'?';}
         if(item.type==='ingrs') return item.items.map(i=>i.nom+(i.q?' ('+i.q+')':'')).join(', ');
         return '';
       }).filter(Boolean).join(' + ');
       sf(9,'normal',TXT);
-      const lines=doc.splitTextToSize(label,W-M*2-22);
+      const lines=doc.splitTextToSize(n(label),W-M*2-22);
       doc.text(lines,M+22,y+4);y+=lines.length*5+3;
     });y+=4;
   });
@@ -1807,7 +1813,7 @@ function exportPDF(){
   doc.addPage();y=20;
   doc.setFillColor(...G);doc.roundedRect(M,y,W-M*2,10,2,2,'F');
   doc.setFontSize(12);doc.setFont('helvetica','bold');doc.setTextColor(255,255,255);
-  doc.text('Liste de courses',M+4,y+7);y+=16;
+  doc.text(n('Liste de courses'),M+4,y+7);y+=16;
   const bycat=buildCourses();
   const catOrder=[...Object.keys(CAT_CONFIG),'Autres'];
   catOrder.forEach(cat=>{
@@ -1815,21 +1821,21 @@ function exportPDF(){
     const keys=Object.keys(catItems).sort();
     if(!keys.length) return;
     if(y>260){doc.addPage();y=20;}
-    sf(9,'bold',G);doc.text(cat.toUpperCase(),M,y);y+=5;
+    sf(9,'bold',G);doc.text(n(cat.toUpperCase()),M,y);y+=5;
     let col=0,colW=(W-M*2-6)/2,leftY=y,rightY=y;
     keys.forEach(k=>{
       const item=catItems[k];const cx=col===0?M:M+colW+6;const cy=col===0?leftY:rightY;
       if(cy>272){doc.addPage();leftY=20;rightY=20;}
       doc.setDrawColor(...MUT);doc.setLineWidth(0.3);doc.roundedRect(cx,cy,4,4,0.8,0.8,'S');
-      sf(9,'normal',TXT);const nl=doc.splitTextToSize(item.nom,colW-20);doc.text(nl,cx+6,cy+3.2);
-      if(item.qtys.length){sf(8,'normal',MUT);doc.text(item.qtys.join(', '),cx+colW-2,cy+3.2,{align:'right'});}
+      sf(9,'normal',TXT);const nl=doc.splitTextToSize(n(item.nom),colW-20);doc.text(nl,cx+6,cy+3.2);
+      if(item.qtys.length){sf(8,'normal',MUT);doc.text(n(item.qtys.join(', ')),cx+colW-2,cy+3.2,{align:'right'});}
       const rh=nl.length*4.5+2;
       if(col===0){leftY+=rh;col=1;}else{rightY+=rh;col=0;}
     });
     y=Math.max(leftY,rightY)+4;
   });
   const total=doc.getNumberOfPages();
-  for(let i=1;i<=total;i++){doc.setPage(i);doc.setFontSize(8);doc.setFont('helvetica','normal');doc.setTextColor(180,180,170);doc.text(`MenuPlaner — ${weekLabel()} — Page ${i}/${total}`,W/2,292,{align:'center'});}
+  for(let i=1;i<=total;i++){doc.setPage(i);doc.setFontSize(8);doc.setFont('helvetica','normal');doc.setTextColor(180,180,170);doc.text(n(`MenuPlaner — ${weekLabel()} — Page ${i}/${total}`),W/2,292,{align:'center'});}
   doc.save(`menus_${getWeekKey()}.pdf`);
 }
 
