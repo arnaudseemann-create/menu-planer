@@ -684,9 +684,10 @@ function restoreMS(){
 async function fetchCalendar(idx){
   const token = await getToken(idx);
   if(!token) return;
-  const start = getWeekStart(-1).toISOString();
-  const end   = new Date(getWeekStart(2)).toISOString();
-  const url   = `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${start}&endDateTime=${end}&$select=subject,start,end,isAllDay&$orderby=start/dateTime&$top=100`;
+  // Fetch 2 months: 2 weeks back + 6 weeks forward
+  const start = getWeekStart(-2).toISOString();
+  const end   = new Date(getWeekStart(8)).toISOString();
+  const url   = `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${start}&endDateTime=${end}&$select=subject,start,end,isAllDay&$orderby=start/dateTime&$top=500`;
   try{
     const resp = await fetch(url, { headers:{ Authorization:`Bearer ${token}`, Prefer:'outlook.timezone="Europe/Paris"' } });
     const data = await resp.json();
