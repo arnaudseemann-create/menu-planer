@@ -1827,9 +1827,26 @@ function exportPDF(){
     keys.forEach(k=>{
       const item=catItems[k];const cx=col===0?M:M+colW+6;const cy=col===0?leftY:rightY;
       if(cy>272){doc.addPage();leftY=20;rightY=20;}
-      doc.setDrawColor(...MUT);doc.setLineWidth(0.3);doc.roundedRect(cx,cy,4,4,0.8,0.8,'S');
-      sf(9,'normal',TXT);const nl=doc.splitTextToSize(n(item.nom),colW-20);doc.text(nl,cx+6,cy+3.2);
-      if(item.qtys.length){sf(8,'normal',MUT);doc.text(n(item.qtys.join(', ')),cx+colW-2,cy+3.2,{align:'right'});}
+      const isChecked=!!checked[k];
+      // Checkbox
+      doc.setDrawColor(...MUT);doc.setLineWidth(0.3);
+      doc.roundedRect(cx,cy,4,4,0.8,0.8,'S');
+      if(isChecked){
+        // Fill checkbox green + draw checkmark
+        doc.setFillColor(...G);doc.roundedRect(cx,cy,4,4,0.8,0.8,'F');
+        doc.setDrawColor(255,255,255);doc.setLineWidth(0.5);
+        doc.line(cx+0.8,cy+2,cx+1.8,cy+3,cx+3.2,cy+1);
+      }
+      // Item name — strikethrough if checked
+      sf(9,isChecked?'normal':'normal', isChecked?[160,160,150]:TXT);
+      const nl=doc.splitTextToSize(n(item.nom),colW-20);
+      doc.text(nl,cx+6,cy+3.2);
+      if(isChecked){
+        // Strikethrough line
+        doc.setDrawColor(...[160,160,150]);doc.setLineWidth(0.3);
+        nl.forEach((_,li)=>doc.line(cx+6,cy+3.2-1+li*4.5,cx+6+doc.getTextWidth(nl[li]),cy+3.2-1+li*4.5));
+      }
+      if(item.qtys.length){sf(8,'normal',isChecked?[160,160,150]:MUT);doc.text(n(item.qtys.join(', ')),cx+colW-2,cy+3.2,{align:'right'});}
       const rh=nl.length*4.5+2;
       if(col===0){leftY+=rh;col=1;}else{rightY+=rh;col=0;}
     });
