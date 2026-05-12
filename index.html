@@ -8,8 +8,6 @@
 <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
-<script>if(typeof msal==='undefined'){document.write('<script src="https://alcdn.msftauth.net/browser/2.38.3/js/msal-browser.min.js"><\/script>');}</script>
 
 <!-- ═══════════════════════════════════════════════════════
      🔥 FIREBASE — Remplacez par votre config
@@ -544,144 +542,186 @@ let pickerSelectedIngrs=[], pickerCatOpen={};
 let pickerQtys={};
 
 // ══════════════════════════════════════════════════════════════
-// MICROSOFT GRAPH — Agenda Outlook
+// MICROSOFT GRAPH — Auth PKCE native (sans librairie externe)
 // ══════════════════════════════════════════════════════════════
-const MS_CLIENT_ID = 'f1227cbb-0f43-4794-9936-e94812e4a622';
-const MS_SCOPES    = ['Calendars.Read','User.Read'];
+const MS_CLIENT_ID  = 'f1227cbb-0f43-4794-9936-e94812e4a622';
+const MS_SCOPES     = 'Calendars.Read User.Read';
+const MS_AUTHORITY  = 'https://login.microsoftonline.com/consumers/oauth2/v2.0';
+const MS_REDIRECT   = window.location.origin + window.location.pathname;
 
-// Deux comptes : compte1 (vous) + compte2 (conjoint)
 let msAccounts = [
-  { key:'ms1', label:'Agenda 1', token:null, events:[], color:'#5B5EA6', bgColor:'#EEEDFE' },
-  { key:'ms2', label:'Agenda 2', token:null, events:[], color:'#185FA5', bgColor:'#E3EDFC' },
+  { key:'ms1', label:'Agenda 1', token:null, tokenExp:0, events:[], color:'#5B5EA6', bgColor:'#EEEDFE' },
+  { key:'ms2', label:'Agenda 2', token:null, tokenExp:0, events:[], color:'#185FA5', bgColor:'#E3EDFC' },
 ];
-let msApp = null;
-let msAppReady = false;
+let msPendingIdx = null; // which account is being connected
 
-async function initMSAL(){
-  if(msAppReady) return;
-  if(typeof msal === 'undefined'){
-    console.warn('MSAL non chargé — agenda Outlook désactivé');
-    return;
-  }
-  msApp = new msal.PublicClientApplication({
-    auth:{
-      clientId: MS_CLIENT_ID,
-      authority: 'https://login.microsoftonline.com/consumers',
-      redirectUri: window.location.origin + window.location.pathname,
-    },
-    cache:{ cacheLocation:'localStorage', storeAuthStateInCookie:false }
-  });
-  await msApp.initialize();
-  msAppReady = true;
-  // Restore existing accounts from cache
-  const accounts = msApp.getAllAccounts();
-  accounts.forEach((acc,i)=>{
-    if(i<2) msAccounts[i].msAccount=acc;
-  });
-  await fetchAllCalendars();
-  render();
-}
-
-async function ensureMSAL(){
-  if(typeof msal === 'undefined') throw new Error('MSAL non disponible — vérifiez votre connexion internet');
-  if(!msAppReady) await initMSAL();
+// ── PKCE helpers ──────────────────────────────────────────────
+async function generatePKCE(){
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  const verifier = btoa(String.fromCharCode(...array))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const challenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  return { verifier, challenge };
 }
 
 async function connectMS(idx){
-  try{
-    await ensureMSAL();
-    const resp = await msApp.loginPopup({
-      scopes: MS_SCOPES,
-      prompt: 'select_account'
-    });
-    msAccounts[idx].msAccount = resp.account;
-    const label = prompt(`Nom pour cet agenda (ex: "${resp.account.name}") :`, resp.account.name||`Agenda ${idx+1}`);
-    if(label) msAccounts[idx].label = label;
-    await fetchCalendar(idx);
-    render();
-    toast(`${msAccounts[idx].label} connecté !`);
-  } catch(e){
-    if(e.errorCode !== 'user_cancelled') toast('Erreur connexion Microsoft : '+e.message);
-  }
+  msPendingIdx = idx;
+  const { verifier, challenge } = await generatePKCE();
+  const state = Math.random().toString(36).slice(2);
+  // Store verifier & state & idx in sessionStorage
+  sessionStorage.setItem('ms_pkce_verifier', verifier);
+  sessionStorage.setItem('ms_pkce_state', state);
+  sessionStorage.setItem('ms_pkce_idx', idx);
+  const params = new URLSearchParams({
+    client_id:             MS_CLIENT_ID,
+    response_type:         'code',
+    redirect_uri:          MS_REDIRECT,
+    scope:                 MS_SCOPES,
+    response_mode:         'query',
+    state,
+    code_challenge:        challenge,
+    code_challenge_method: 'S256',
+    prompt:                'select_account',
+  });
+  window.location.href = `${MS_AUTHORITY}/authorize?${params}`;
 }
 
-async function disconnectMS(idx){
-  await ensureMSAL();
-  if(msAccounts[idx].msAccount){
-    try{ await msApp.logoutPopup({ account: msAccounts[idx].msAccount }); }catch(e){}
-  }
-  msAccounts[idx].msAccount = null;
-  msAccounts[idx].token = null;
-  msAccounts[idx].events = [];
-  render();
-  toast(`${msAccounts[idx].label} déconnecté`);
+async function handleMSCallback(){
+  const params = new URLSearchParams(window.location.search);
+  const code  = params.get('code');
+  const state = params.get('state');
+  if(!code) return false;
+  const savedState   = sessionStorage.getItem('ms_pkce_state');
+  const verifier     = sessionStorage.getItem('ms_pkce_verifier');
+  const idx          = parseInt(sessionStorage.getItem('ms_pkce_idx')||'0');
+  sessionStorage.removeItem('ms_pkce_state');
+  sessionStorage.removeItem('ms_pkce_verifier');
+  sessionStorage.removeItem('ms_pkce_idx');
+  if(state !== savedState){ toast('Erreur auth Microsoft : state invalide'); return false; }
+  // Exchange code for token
+  const body = new URLSearchParams({
+    client_id:    MS_CLIENT_ID,
+    grant_type:   'authorization_code',
+    code,
+    redirect_uri: MS_REDIRECT,
+    code_verifier:verifier,
+    scope:        MS_SCOPES,
+  });
+  try{
+    const resp = await fetch(`${MS_AUTHORITY}/token`,{ method:'POST', body, headers:{'Content-Type':'application/x-www-form-urlencoded'} });
+    const data = await resp.json();
+    if(data.error){ toast('Erreur token Microsoft : '+data.error_description); return false; }
+    msAccounts[idx].token    = data.access_token;
+    msAccounts[idx].tokenExp = Date.now() + (data.expires_in-60)*1000;
+    // Store refresh token & account index
+    localStorage.setItem(`ms_refresh_${idx}`, data.refresh_token||'');
+    // Get user name
+    const me = await fetch('https://graph.microsoft.com/v1.0/me',{ headers:{ Authorization:`Bearer ${data.access_token}` }});
+    const meData = await me.json();
+    msAccounts[idx].label = meData.displayName || `Agenda ${idx+1}`;
+    localStorage.setItem(`ms_label_${idx}`, msAccounts[idx].label);
+    // Clean URL
+    window.history.replaceState({}, document.title, window.location.pathname);
+    await fetchCalendar(idx);
+    return true;
+  } catch(e){ toast('Erreur Microsoft : '+e.message); return false; }
+}
+
+async function refreshToken(idx){
+  const refreshToken = localStorage.getItem(`ms_refresh_${idx}`);
+  if(!refreshToken) return null;
+  const body = new URLSearchParams({
+    client_id:     MS_CLIENT_ID,
+    grant_type:    'refresh_token',
+    refresh_token: refreshToken,
+    scope:         MS_SCOPES,
+  });
+  try{
+    const resp = await fetch(`${MS_AUTHORITY}/token`,{ method:'POST', body, headers:{'Content-Type':'application/x-www-form-urlencoded'} });
+    const data = await resp.json();
+    if(data.error) return null;
+    msAccounts[idx].token    = data.access_token;
+    msAccounts[idx].tokenExp = Date.now() + (data.expires_in-60)*1000;
+    localStorage.setItem(`ms_refresh_${idx}`, data.refresh_token||refreshToken);
+    return data.access_token;
+  } catch(e){ return null; }
 }
 
 async function getToken(idx){
-  await ensureMSAL();
   const acc = msAccounts[idx];
-  if(!acc.msAccount) return null;
-  try{
-    const resp = await msApp.acquireTokenSilent({ scopes: MS_SCOPES, account: acc.msAccount });
-    acc.token = resp.accessToken;
-    return resp.accessToken;
-  } catch(e){
-    try{
-      const resp = await msApp.acquireTokenPopup({ scopes: MS_SCOPES, account: acc.msAccount });
-      acc.token = resp.accessToken;
-      return resp.accessToken;
-    } catch(e2){ return null; }
-  }
+  if(acc.token && Date.now() < acc.tokenExp) return acc.token;
+  return await refreshToken(idx);
+}
+
+function isConnected(idx){
+  return !!(msAccounts[idx].token || localStorage.getItem(`ms_refresh_${idx}`));
+}
+
+function disconnectMS(idx){
+  msAccounts[idx].token    = null;
+  msAccounts[idx].tokenExp = 0;
+  msAccounts[idx].events   = [];
+  localStorage.removeItem(`ms_refresh_${idx}`);
+  localStorage.removeItem(`ms_label_${idx}`);
+  msAccounts[idx].label = `Agenda ${idx+1}`;
+  render();
+  toast(`Agenda ${idx+1} déconnecté`);
+}
+
+function restoreMS(){
+  // Restore labels and try to use refresh tokens on load
+  [0,1].forEach(i=>{
+    const label = localStorage.getItem(`ms_label_${i}`);
+    if(label) msAccounts[i].label = label;
+  });
 }
 
 async function fetchCalendar(idx){
   const token = await getToken(idx);
   if(!token) return;
-  // Fetch events for current week ± 1 week
   const start = getWeekStart(-1).toISOString();
   const end   = new Date(getWeekStart(2)).toISOString();
   const url   = `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${start}&endDateTime=${end}&$select=subject,start,end,isAllDay&$orderby=start/dateTime&$top=100`;
-  const resp  = await fetch(url, { headers:{ Authorization:`Bearer ${token}` } });
-  const data  = await resp.json();
-  msAccounts[idx].events = (data.value||[]).map(e=>({
-    title:   e.subject,
-    start:   e.start.dateTime||e.start.date,
-    end:     e.end.dateTime||e.end.date,
-    allDay:  e.isAllDay,
-    owner:   msAccounts[idx].label,
-    color:   msAccounts[idx].color,
-    bg:      msAccounts[idx].bgColor,
-  }));
+  try{
+    const resp = await fetch(url, { headers:{ Authorization:`Bearer ${token}`, Prefer:'outlook.timezone="Europe/Paris"' } });
+    const data = await resp.json();
+    msAccounts[idx].events = (data.value||[]).map(e=>({
+      title:  e.subject,
+      start:  e.start.dateTime||e.start.date,
+      end:    e.end.dateTime||e.end.date,
+      allDay: e.isAllDay,
+      owner:  msAccounts[idx].label,
+      color:  msAccounts[idx].color,
+      bg:     msAccounts[idx].bgColor,
+    }));
+  } catch(e){ console.warn('Erreur calendrier',idx,e); }
 }
 
 async function fetchAllCalendars(){
-  await Promise.all(msAccounts.map((_,i)=>fetchCalendar(i)));
+  await Promise.all([0,1].map(i=> isConnected(i) ? fetchCalendar(i) : Promise.resolve()));
   render();
 }
 
-// Get events for a specific day (YYYY-MM-DD)
 function getEventsForDay(dateStr){
-  const all = [];
-  msAccounts.forEach(acc=>{
-    (acc.events||[]).forEach(e=>{
-      const eDate = e.start.slice(0,10);
-      if(eDate === dateStr) all.push(e);
-    });
-  });
+  const all=[];
+  msAccounts.forEach(acc=>(acc.events||[]).forEach(e=>{ if(e.start.slice(0,10)===dateStr) all.push(e); }));
   return all.sort((a,b)=>a.start.localeCompare(b.start));
 }
 
-// Get date string for a jour in current week
 function getDateForJour(jour){
-  const idx = JOURS.indexOf(jour);
-  const d   = getWeekStart();
-  d.setDate(d.getDate() + idx);
+  const idx=JOURS.indexOf(jour);
+  const d=getWeekStart(); d.setDate(d.getDate()+idx);
   return d.toISOString().slice(0,10);
 }
 
-function formatEventTime(isoStr, allDay){
+function formatEventTime(isoStr,allDay){
   if(allDay) return 'Journée';
-  const d = new Date(isoStr);
+  const d=new Date(isoStr);
   return d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
 }
 
@@ -692,6 +732,15 @@ function waitForFB(cb){
   if(window._fbReady){FB=window._FB;cb();}
   else document.addEventListener('fb-ready',()=>{FB=window._FB;cb();});
 }
+
+// Handle Microsoft OAuth callback on page load
+(async ()=>{
+  if(window.location.search.includes('code=') && window.location.search.includes('state=')){
+    // We're back from Microsoft login — wait for Firebase to be ready then handle
+    const success = await handleMSCallback();
+    if(success) toast(`${msAccounts[parseInt(sessionStorage.getItem('ms_pkce_idx')||'0')]?.label||'Agenda'} connecté !`);
+  }
+})();
 
 waitForFB(()=>{
   const cfg=document.querySelector('script[type=module]').textContent;
@@ -707,7 +756,8 @@ waitForFB(()=>{
       updateWeekUI(); // ← fix: affiche la date dès le démarrage
       loadFamilyName();
       subscribeToAll();
-      initMSAL(); // ← Microsoft Graph (async, non-blocking)
+      restoreMS();
+      fetchAllCalendars();
     } else {
       uid=null;
       document.getElementById('auth-screen').style.display='flex';
@@ -940,9 +990,8 @@ function getCatStyle(cat){
 }
 
 function toggleMSAccount(idx){
-  const acc = msAccounts[idx];
-  if(acc.msAccount){
-    if(confirm(`Déconnecter "${acc.label}" ?`)) disconnectMS(idx);
+  if(isConnected(idx)){
+    if(confirm(`Déconnecter "${msAccounts[idx].label}" ?`)) disconnectMS(idx);
   } else {
     connectMS(idx);
   }
@@ -952,8 +1001,8 @@ function updateMSButtons(){
   msAccounts.forEach((acc,i)=>{
     const btn=document.getElementById(`ms-btn-${i}`);
     if(!btn) return;
-    if(acc.msAccount){
-      btn.style.background=acc.bg||'var(--bll)';
+    if(isConnected(i)){
+      btn.style.background=acc.bgColor||'var(--bll)';
       btn.style.borderColor=acc.color;
       btn.style.color=acc.color;
       btn.title=`${acc.label} (connecté) — cliquer pour déconnecter`;
