@@ -2,4 +2,4 @@
   for = "/*"
   [headers.values]
     X-Frame-Options = "ALLOWALL"
-    Content-Security-Policy = "frame-ancestors *"
+    Content-Security-Policy = "frame-ancestors 'self' https://63bf9a9a.eu.jeedom.link https://*.jeedom.link https://*.jeedom.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://alcdn.msauth.net https://alcdn.msftauth.net https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://www.gstatic.com https://fonts.googleapis.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://graph.microsoft.com https://login.microsoftonline.com https://alcdn.msauth.net https://alcdn.msftauth.net;"
